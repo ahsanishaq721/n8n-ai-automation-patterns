@@ -1,0 +1,206 @@
+{
+  "name": "P2b - Heartbeat watcher (alerts once per stall)",
+  "nodes": [
+    {
+      "id": "p2b-trigger",
+      "name": "Every 5 Minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 5
+            }
+          ]
+        }
+      },
+      "notes": "Keep the watcher in a DIFFERENT workflow from the job it watches: a dead job cannot report its own death."
+    },
+    {
+      "id": "p2b-config",
+      "name": "Config",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        240,
+        0
+      ],
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "p2b-config-url",
+              "name": "alert_webhook_url",
+              "value": "https://REPLACE_ME/your-alert-webhook",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "notes": "Put YOUR alert webhook here (for example a Slack incoming webhook). It is a secret: keep it in this one node and never share a file that contains the real value."
+    },
+    {
+      "id": "p2b-check",
+      "name": "Check heartbeats",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        480,
+        0
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT j.job,\n       COALESCE(h.last_run_at, 'epoch'::timestamptz) AS last_run_at,\n       round(EXTRACT(EPOCH FROM (now() - COALESCE(h.last_run_at, 'epoch'::timestamptz))) / 60) AS stale_mins\nFROM (VALUES ('release_tasks', interval '45 minutes')) AS j(job, max_age)\nLEFT JOIN job_heartbeat h ON h.job = j.job\nLEFT JOIN job_alert_state a ON a.job = j.job\nWHERE COALESCE(h.last_run_at, 'epoch'::timestamptz) < now() - j.max_age\n  AND (a.alerted_at IS NULL\n       OR a.alerted_at <= COALESCE(h.last_run_at, 'epoch'::timestamptz)\n       OR a.alerted_at < now() - interval '2 hours');",
+        "options": {}
+      },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "onError": "continueRegularOutput",
+      "notes": "Deliberately NO Always Output Data: a healthy or already-alerted job returns 0 rows, and that empty output is what stops the chain. Turning it on would alert on every run. Read-only SELECT, so the retry is safe. If this query itself fails, the error item reaches 'Build alert' and is reported as 'could not check', never as a stall.",
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_ME",
+          "name": "postgres (your own credential)"
+        }
+      }
+    },
+    {
+      "id": "p2b-build",
+      "name": "Build alert",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        720,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Code node, mode \"Run Once for All Items\".\n// One alert per stalled job that is DUE an alert (a healthy or already-alerted job returns 0 rows\n// from the check query, so n8n skips this node), or ONE notice if the check query itself failed.\n// \"kind\" and \"job\" travel on to the node that records the alert: only a genuine stall may be recorded\n// as alerted. A failed CHECK must never be recorded, or it would silence a real stall for 2 hours.\nconst items = $input.all();\nif (!items.length) return [];\n\n// Error items differ per node type (Postgres: top-level message; HTTP Request: error.message;\n// Google Calendar: a plain string). One extractor for all of them, never \"[object Object]\".\nconst errText = (x) => {\n  const e = x.error;\n  return String(\n    (typeof x.message === 'string' && x.message) ||\n      (typeof e === 'string' && e) ||\n      (e && (e.message || e.description)) ||\n      'unknown error',\n  );\n};\n\nconst failed = items.find(\n  (it) => it.json && (it.json.error !== undefined || (it.json.message !== undefined && it.json.job === undefined)),\n);\nif (failed) {\n  return [\n    {\n      json: {\n        kind: 'check_failed',\n        job: '',\n        alert:\n          ':warning: *Could not check the job heartbeats*\\n' +\n          'The check query failed, so no job is verified until this is fixed:\\n- ' +\n          errText(failed.json),\n      },\n    },\n  ];\n}\n\n// Describe each watched job here. The key must match the job name in job_heartbeat.\nconst JOBS = {\n  release_tasks: {\n    label: 'task release job',\n    cadence: 'every 15 minutes',\n    impact: 'While it is down, tasks that are due are not released.',\n  },\n};\n\nreturn items.map((it) => {\n  const j = it.json;\n  const m = JOBS[j.job] || { label: String(j.job), cadence: 'on its schedule', impact: '' };\n  const mins = Number(j.stale_mins);\n  const never = !Number.isFinite(mins) || mins > 100000; // 'epoch' stands in for \"no heartbeat row\"\n  const alert =\n    ':rotating_light: *' + m.label + ' has STOPPED running*\\n' +\n    (never\n      ? 'No heartbeat has ever been recorded for it.'\n      : 'Last heartbeat was ' + mins + ' minutes ago (' + j.last_run_at + ').') +\n    ' It should run ' + m.cadence + '.\\n' +\n    (m.impact ? m.impact + '\\n' : '') +\n    'Fix: open the job workflow in n8n and toggle it inactive, then active, to re-arm its schedule trigger.\\n' +\n    '(You get this once per stall, then a reminder every 2 hours until it is fixed.)';\n  return { json: { kind: 'stalled', job: j.job, alert } };\n});\n"
+      },
+      "notes": "Source with comments: code/p2b-build-alert.js. Edit the JOBS map for your own jobs."
+    },
+    {
+      "id": "p2b-send",
+      "name": "Send alert",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        960,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Config').first().json.alert_webhook_url }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ text: $json.alert }) }}",
+        "options": {}
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueRegularOutput",
+      "notes": "Retry is safe: a duplicate alert is better than a lost one. Slack-style incoming webhooks answer the text 'ok'; the next node only records the alert as delivered when it sees that."
+    },
+    {
+      "id": "p2b-mark",
+      "name": "Mark alert sent",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1200,
+        0
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO job_alert_state (job, alerted_at, detail)\nSELECT $1::text, now(), 'stall alert delivered'\nWHERE $2::boolean AND COALESCE($1::text, '') <> ''\nON CONFLICT (job) DO UPDATE SET alerted_at = now(), detail = EXCLUDED.detail\nRETURNING job;",
+        "options": {
+          "queryReplacement": "={{ [ $('Build alert').item.json.job, $('Build alert').item.json.kind === 'stalled' && $json.data === 'ok' ] }}"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 1000,
+      "onError": "continueRegularOutput",
+      "notes": "Writes only when the webhook answered 'ok' AND the alert was a real stall (never for a failed check, which would silence a real stall for 2 hours). Idempotent upsert, so the retry is safe. If this write fails, the worst case is one duplicate alert at the next check, never a lost one.",
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_ME",
+          "name": "postgres (your own credential)"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Every 5 Minutes": {
+      "main": [
+        [
+          {
+            "node": "Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Config": {
+      "main": [
+        [
+          {
+            "node": "Check heartbeats",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check heartbeats": {
+      "main": [
+        [
+          {
+            "node": "Build alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build alert": {
+      "main": [
+        [
+          {
+            "node": "Send alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send alert": {
+      "main": [
+        [
+          {
+            "node": "Mark alert sent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "none",
+    "saveManualExecutions": true,
+    "saveExecutionProgress": false
+  }
+}

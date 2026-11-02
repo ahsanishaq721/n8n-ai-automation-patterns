@@ -1,0 +1,15 @@
+# Secrets and local config: never commit a real webhook URL, key or exported credential
+.env
+.env.*
+!.env.example
+
+# Raw n8n exports go through a sanitiser first; keep unsanitised copies out of this repo
+_raw/
+*.raw.json
+
+# Node and editor noise
+node_modules/
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

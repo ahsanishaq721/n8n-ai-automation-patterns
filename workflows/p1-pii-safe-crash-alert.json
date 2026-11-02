@@ -1,0 +1,121 @@
+{
+  "name": "P1 - Crash alert that cannot leak data",
+  "nodes": [
+    {
+      "id": "p1-trigger",
+      "name": "Error Trigger",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {},
+      "notes": "Set THIS workflow as the Error workflow of every workflow you want watched (Workflow settings). The Error Trigger only fires for automatic (published) runs, not manual test runs."
+    },
+    {
+      "id": "p1-config",
+      "name": "Config",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        240,
+        0
+      ],
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "p1-config-url",
+              "name": "alert_webhook_url",
+              "value": "https://REPLACE_ME/your-alert-webhook",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "notes": "Put YOUR alert webhook here (for example a Slack incoming webhook). It is a secret: keep it in this one node and never share a file that contains the real value."
+    },
+    {
+      "id": "p1-redact",
+      "name": "Redact error text",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        480,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Code node, mode \"Run Once for Each Item\".\n// Build a crash alert that cannot leak data: only words from the allow-list survive,\n// everything else (names, ids, emails, values inside the error text) becomes an ellipsis.\nconst ALLOWED = new Set(\n  (\n    'error errors failed failure fail invalid input syntax type integer text boolean timestamp timestamptz uuid ' +\n    'json jsonb numeric bigint value values violates violation unique constraint duplicate key foreign null ' +\n    'undefined object array string number nan column columns relation table does exist exists already missing ' +\n    'required field fields cannot could unable connect connection connecting refused reset closed terminated ' +\n    'timeout timed out time request response bad unauthorized forbidden found unavailable service gateway ' +\n    'internal server too many requests rate limit limited quota exceeded token credentials credential ' +\n    'authorization authentication expired permission denied access unexpected end at near line the a an to in ' +\n    'on for with from by or and is was were be has have had no not it its this that of parse parsing read ' +\n    'reading property properties socket hang up ssl tls certificate dns lookup network database query statement ' +\n    'deadlock detected transaction aborted rollback lock wait canceling canceled cancelled memory heap maximum ' +\n    'size payload large entity unprocessable method allowed conflict gone moved redirect status code message ' +\n    'workflow node execution webhook respond empty result results item items data binary file econnreset ' +\n    'econnrefused etimedout enotfound eai_again epipe ehostunreach enetunreach getaddrinfo http https api ' +\n    'parameter parameters bind supplied expected got but only one more than less greater equal password peer ' +\n    'role operator function unknown ambiguous sql'\n  ).split(' '),\n);\n\n// The Config node sits between the trigger and this node and does not pass the trigger's fields on,\n// so read the trigger's item by name instead of relying on $json.\nconst src = $('Error Trigger').first().json;\nconst e = src.execution || {};\nconst wf = src.workflow || {};\nconst raw = String((e.error && e.error.message) || '');\n\nlet prev = '';\nconst safe = raw\n  .split(/\\s+/)\n  .map((word) => {\n    const t = word.replace(/^[^A-Za-z0-9]+|[^A-Za-z0-9]+$/g, '');\n    // A 3-digit HTTP status survives only right after the word \"code\" or \"status\".\n    const keep = ALLOWED.has(t.toLowerCase()) || (/^[1-5]\\d\\d$/.test(t) && (prev === 'code' || prev === 'status'));\n    prev = t.toLowerCase();\n    return keep ? t : '...';\n  })\n  .join(' ')\n  .replace(/(\\.\\.\\. ?){2,}/g, '... ')\n  .slice(0, 160);\n\nconst lines = [\n  ':rotating_light: *Workflow crashed*',\n  '*Workflow:* ' + (wf.name || 'unknown'),\n  '*Failed node:* ' + (e.lastNodeExecuted || 'unknown'),\n  '*Error (technical words only):* ' + safe,\n  '*Time:* ' + new Date().toISOString(),\n];\nif (e.id) lines.push('*Execution ID:* ' + e.id);\nif (e.url) lines.push('*Open:* ' + e.url);\n\nreturn { json: { text: lines.join('\\n') } };\n"
+      },
+      "notes": "Allow-list redaction: only known technical words survive, so a name, id or e-mail inside an error message can never reach the alert channel. Source with comments: code/p1-redact-error.js."
+    },
+    {
+      "id": "p1-send",
+      "name": "Send alert",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        720,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Config').first().json.alert_webhook_url }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ text: $json.text }) }}",
+        "options": {}
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueRegularOutput",
+      "notes": "Retry is on: a duplicate alert is acceptable, a lost alert is not. onError = Continue so a dead alert channel cannot fail this workflow in a loop. Slack-style incoming webhooks accept {\"text\": ...}; adapt the body for your receiver."
+    }
+  ],
+  "connections": {
+    "Error Trigger": {
+      "main": [
+        [
+          {
+            "node": "Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Config": {
+      "main": [
+        [
+          {
+            "node": "Redact error text",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Redact error text": {
+      "main": [
+        [
+          {
+            "node": "Send alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "none",
+    "saveDataSuccessExecution": "none",
+    "saveManualExecutions": false,
+    "saveExecutionProgress": false
+  }
+}

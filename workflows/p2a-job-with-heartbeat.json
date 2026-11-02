@@ -1,0 +1,71 @@
+{
+  "name": "P2a - Scheduled job that writes a heartbeat",
+  "nodes": [
+    {
+      "id": "p2a-trigger",
+      "name": "Every 15 Minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 15
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "p2a-job",
+      "name": "Release due tasks and write heartbeat",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        240,
+        0
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH work AS (\n  UPDATE tasks SET status = 'done'\n  WHERE id IN (SELECT id FROM tasks WHERE status = 'due' ORDER BY id LIMIT 100)\n  RETURNING id\n), beat AS (\n  INSERT INTO job_heartbeat (job, last_run_at, detail) VALUES ('release_tasks', now(), 'tick')\n  ON CONFLICT (job) DO UPDATE SET last_run_at = now(), detail = EXCLUDED.detail\n  RETURNING 1\n)\nSELECT id FROM work;",
+        "options": {}
+      },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "onError": "continueRegularOutput",
+      "notes": "The heartbeat is written in the SAME statement as the work (a data-modifying CTE always runs to completion, even when the work returns 0 rows). Retry is safe: the update only moves due tasks to done and the beat is an upsert. Create the tables first: sql/p2-heartbeat-tables.sql.",
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_ME",
+          "name": "postgres (your own credential)"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Every 15 Minutes": {
+      "main": [
+        [
+          {
+            "node": "Release due tasks and write heartbeat",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "none",
+    "saveManualExecutions": true,
+    "saveExecutionProgress": false
+  }
+}
