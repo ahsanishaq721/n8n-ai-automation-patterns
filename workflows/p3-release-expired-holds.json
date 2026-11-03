@@ -1,0 +1,169 @@
+{
+  "name": "P3 - Release expired slot holds",
+  "nodes": [
+    {
+      "id": "p3-trigger",
+      "name": "Every 5 Minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 5
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "p3-release",
+      "name": "Release Expired Holds",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        240,
+        0
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH expired AS (\n  SELECT id FROM slot_holds\n  WHERE status = 'held' AND expires_at IS NOT NULL AND expires_at <= now()\n  ORDER BY id LIMIT 100\n), rel AS (\n  UPDATE slot_holds h\n  SET status = 'released', released_at = now(), updated_at = now()\n  FROM expired e WHERE h.id = e.id\n  RETURNING h.id, h.calendar_event_id, h.site_key\n)\nSELECT rel.id, rel.calendar_event_id, c.calendar_id, c.calendar_provider\nFROM rel JOIN clients c ON c.site_key = rel.site_key;",
+        "options": {}
+      },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "onError": "continueRegularOutput",
+      "notes": "Single authority for expiry: only this statement turns a 'held' row into 'released'. The unique index on (site_key, slot_start) is what stops a double booking; this job only frees abandoned holds. At most 100 rows per run. Retry is safe: a released row is no longer 'held', so a second run changes nothing. Create the tables first: sql/p3-slot-holds.sql.",
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_ME",
+          "name": "postgres (your own credential)"
+        }
+      }
+    },
+    {
+      "id": "p3-has-event",
+      "name": "Has Calendar Event?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        480,
+        0
+      ],
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "options": {},
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "ce1",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              },
+              "leftValue": "={{ $json.calendar_event_id }}",
+              "rightValue": ""
+            },
+            {
+              "id": "ce2",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              },
+              "leftValue": "={{ $json.calendar_provider }}",
+              "rightValue": "google"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "p3-delete",
+      "name": "Delete Stale Event",
+      "type": "n8n-nodes-base.googleCalendar",
+      "typeVersion": 1.3,
+      "position": [
+        720,
+        -80
+      ],
+      "parameters": {
+        "eventId": "={{ $json.calendar_event_id }}",
+        "calendar": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $json.calendar_id }}"
+        },
+        "resource": "event",
+        "operation": "delete"
+      },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "onError": "continueRegularOutput",
+      "notes": "Only rows that had a calendar event and a 'google' provider reach this node (the IF before it). Retry settings are copied from the original job.",
+      "credentials": {
+        "googleCalendarOAuth2Api": {
+          "id": "REPLACE_ME",
+          "name": "google calendar (your own credential)"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Every 5 Minutes": {
+      "main": [
+        [
+          {
+            "node": "Release Expired Holds",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Release Expired Holds": {
+      "main": [
+        [
+          {
+            "node": "Has Calendar Event?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Calendar Event?": {
+      "main": [
+        [
+          {
+            "node": "Delete Stale Event",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "none",
+    "saveManualExecutions": true,
+    "saveExecutionProgress": false
+  }
+}

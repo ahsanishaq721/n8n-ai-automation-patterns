@@ -1,0 +1,12 @@
+{
+  "name": "n8n-ai-automation-patterns",
+  "private": true,
+  "description": "Checks for the patterns in this repo (SQL runs on a real PostgreSQL engine in WebAssembly, no Docker needed)",
+  "type": "commonjs",
+  "scripts": {
+    "test": "node tests/check-code-nodes.js && node tests/check-slot-holds.js"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "0.5.14"
+  }
+}

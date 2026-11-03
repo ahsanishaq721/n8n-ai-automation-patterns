@@ -21,5 +21,8 @@ jobs:
       - name: Workflow exports are valid JSON
         run: |
           for f in workflows/*.json; do node -e "JSON.parse(require('fs').readFileSync('$f','utf8'))" && echo "ok $f"; done
+      - run: npm ci
       - name: Code-node behaviour checks
         run: node tests/check-code-nodes.js
+      - name: P3 SQL and index checks (real PostgreSQL engine)
+        run: node tests/check-slot-holds.js
