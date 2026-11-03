@@ -1,8 +1,10 @@
 # n8n-ai-automation-patterns
 
-Importable n8n workflows for the boring failures of automation in production: crash alerts that leak data, scheduled jobs that stop without a sound, alerts that repeat forever. Each pattern comes from a system I run, rebuilt generically, with the reasoning for every retry decision written next to the node.
+![checks](https://github.com/ahsanishaq721/n8n-ai-automation-patterns/actions/workflows/ci.yml/badge.svg)
 
-**Status (3 Nov 2026): private staging.** Four workflows are built and checked offline. **None has been imported into a fresh n8n and run yet**, so nothing here is claimed as "tested in n8n". [docs/failure-tests.md](docs/failure-tests.md) says exactly what was and was not checked.
+Four n8n workflows, with SQL and automated checks, for the boring failures of automation in production: crash alerts that leak data, scheduled jobs that stop without a sound, alerts that repeat forever, and abandoned bookings that block a slot. Each pattern comes from a system I run, rebuilt generically, with the reasoning for every retry decision written next to the node.
+
+**Status (3 Nov 2026):** 28 automated checks run on every push: 11 on the Code nodes and 17 on the SQL and its indexes, on a real PostgreSQL engine (WebAssembly, no Docker). **The workflows have not been imported into a fresh n8n and run yet**, so nothing here is claimed as "tested in n8n". [docs/failure-tests.md](docs/failure-tests.md) says exactly what was and was not checked.
 
 ## Patterns
 
